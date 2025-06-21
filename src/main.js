@@ -9,22 +9,47 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import Stats from "stats-gl";
 
 class ShaderRenderer {
-  static BLADES_NUM = 32000;
+  static BLADES_NUM = 100000;
   static SEGMENTS = 4;
-  static PATCH_SIZE = 1.0; // Note: 0.5 patch size will corresponds 1 square unit on grid
+  static PATCH_SIZE = 1.25;
   static BLADE_HEIGHT = 0.15;
   static BLADE_WIDTH = 0.01;
 
   constructor() {
+    // GUI + scene setup
     this.gui = new GUI();
+    this.gui.close();
     this.canvas = document.querySelector("canvas.webgl");
     this.scene = new THREE.Scene();
-    this.sizes = {
-      width: window.innerWidth,
-      height: window.innerHeight,
-    };
+    this.sizes = { width: window.innerWidth, height: window.innerHeight };
     this.clock = new THREE.Clock();
 
+    // Animation mixer placeholders
+    this.mixer = null;
+    this.actions = {};
+    this.activeAction = null;
+    this.sequence = [
+      // "Stand_Breathing_01",
+      // "Stand_Eating_01",
+      // "Stand_Breathing_01",
+      "Trans_Stand_to_Lying",
+      "Lying_Breathing_01",
+      "Lying_Breathing_01",
+      "Trans_Sitting_to_Stand",
+    ];
+    this.seqIndex = 0;
+
+    // Preload toon gradient ramp once
+    this.gradientMap = new THREE.TextureLoader().load(
+      "/assets/textures/gradients/5.jpg",
+      (tex) => {
+        tex.minFilter = THREE.NearestFilter;
+        tex.magFilter = THREE.NearestFilter;
+        tex.generateMipmaps = false;
+      }
+    );
+
+    // Init everything
     this.initSceneObjects();
     this.initCamera();
     this.initRenderer();
@@ -43,62 +68,99 @@ class ShaderRenderer {
   }
 
   addFloor() {
-    this.floorGeometry = new THREE.PlaneGeometry(5, 5, 1, 1);
-    this.floorMaterial = new THREE.MeshStandardMaterial({
-      color: "#c7a85b",
-    });
-
+    this.floorGeometry = new THREE.PlaneGeometry(5, 5);
+    this.floorMaterial = new THREE.MeshStandardMaterial({ color: "#c7a85b" });
     this.floorMesh = new THREE.Mesh(this.floorGeometry, this.floorMaterial);
-    this.floorMesh.rotation.x = (-1.0 * Math.PI) / 2;
+    this.floorMesh.rotation.x = -Math.PI / 2;
     this.floorMesh.receiveShadow = true;
     this.scene.add(this.floorMesh);
   }
 
   addGLTF() {
-    new GLTFLoader().load("/assets/models/deer2.glb", (gltf) => {
+    new GLTFLoader().load("/assets/models/deer.glb", (gltf) => {
       const model = gltf.scene;
-      model.scale.set(0.75, 0.75, 0.75);
+      model.scale.set(0.4, 0.4, 0.4);
       model.rotation.y = -Math.PI / 6;
 
-      console.log("model", model);
+      // Mixer and actions
+      this.mixer = new THREE.AnimationMixer(model);
+      gltf.animations.forEach((clip) => {
+        this.actions[clip.name] = this.mixer.clipAction(clip);
+      });
 
+      // Sequence setup
+      this._setupSequence(this.sequence);
+
+      // Material and shadows
       model.traverse((child) => {
         if (child.isMesh) {
-          const oldMat = child.material;
-
-          // Handle multi-materials
-          if (Array.isArray(oldMat)) {
-            child.material = oldMat.map((m) => makeToon(m));
-          } else {
-            child.material = makeToon(oldMat);
-          }
-
+          child.material = this._makeToonMaterial(child.material);
           child.castShadow = true;
           child.receiveShadow = true;
         }
       });
 
+      // GUI for manual override
+      this._createAnimationGUI();
+
       this.scene.add(model);
     });
+  }
 
-    function makeToon(oldMat) {
-      const gradientMap = new THREE.TextureLoader().load(
-        "/assets/textures/gradients/5.jpg"
-      );
-      gradientMap.minFilter = THREE.NearestFilter;
-      gradientMap.magFilter = THREE.NearestFilter;
-      gradientMap.generateMipmaps = false;
-      return new THREE.MeshToonMaterial({
-        color: oldMat.color,
-        map: oldMat.map,
-        lightMap: oldMat.lightMap,
-        aoMap: oldMat.aoMap,
-        emissiveMap: oldMat.emissiveMap,
-        emissive: oldMat.emissive,
-        normalMap: oldMat.normalMap,
-        gradientMap: gradientMap,
+  _setupSequence(names) {
+    this.seq = names;
+    this.seqIndex = 0;
+    this.mixer.addEventListener("finished", () => {
+      this.seqIndex++;
+      if (this.seqIndex < this.seq.length) {
+        this._playClip(this.seq[this.seqIndex]);
+      }
+    });
+    // start
+    this._playClip(this.seq[0]);
+  }
+
+  _playClip(name) {
+    if (this.activeAction) this.activeAction.stop();
+    const action = this.actions[name];
+    action.reset();
+    action.setLoop(THREE.LoopOnce, 1);
+    action.clampWhenFinished = true;
+    action.play();
+    this.activeAction = action;
+  }
+
+  _createAnimationGUI() {
+    const animFolder = this.gui.addFolder("Model Animations");
+    animFolder
+      .add(this, "activeClip", Object.keys(this.actions))
+      .name("Active Clip")
+      .onChange((name) => {
+        if (this.activeAction) this.activeAction.stop();
+        this.activeAction = this.actions[name];
+        this.activeAction.reset().play();
       });
-    }
+
+    animFolder
+      .add({ play: () => this.activeAction?.play() }, "play")
+      .name("▶ Play");
+    animFolder
+      .add({ pause: () => (this.activeAction.paused = true) }, "pause")
+      .name("⏸ Pause");
+  }
+
+  _makeToonMaterial(oldMat) {
+    return new THREE.MeshToonMaterial({
+      color: oldMat.color,
+      map: oldMat.map,
+      lightMap: oldMat.lightMap,
+      aoMap: oldMat.aoMap,
+      emissiveMap: oldMat.emissiveMap,
+      emissive: oldMat.emissive,
+      normalMap: oldMat.normalMap,
+      gradientMap: this.gradientMap,
+      toneMapped: false,
+    });
   }
 
   addGrass() {
@@ -255,7 +317,7 @@ class ShaderRenderer {
     this.directionalLight.position.set(1.75, 1, -1.0);
     this.directionalLight.castShadow = true;
     this.drHelper = new THREE.DirectionalLightHelper(this.directionalLight);
-    this.scene.add(this.drHelper);
+    // this.scene.add(this.drHelper);
 
     // Configure shadow map size and camera for better quality
     this.directionalLight.shadow.mapSize.width = 2048;
@@ -443,7 +505,6 @@ class ShaderRenderer {
       });
 
     // Lighting
-    // Lighting
     const lightingFolder = this.gui.addFolder("Lighting");
 
     // Hemisphere Light
@@ -582,8 +643,6 @@ class ShaderRenderer {
       .name("Time Scale");
 
     animationFolder.add(this.animationParams, "pauseTime").name("Pause Time");
-
-    animationFolder.add(this.animationParams, "resetTime").name("Reset Time");
   }
 
   // Helper method to recreate grass geometry when parameters change
@@ -657,6 +716,9 @@ class ShaderRenderer {
       this.grassMaterial.uniforms.uTime.value +=
         deltaTime * this.animationParams.timeScale;
     }
+
+    if (this.mixer)
+      this.mixer.update(deltaTime * (this.animationParams?.timeScale || 1));
 
     this.controls.update();
 
