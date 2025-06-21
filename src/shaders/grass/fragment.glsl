@@ -6,6 +6,7 @@ uniform vec3 uTipColorDarkBlade;
 uniform vec3 uBaseColorLightBlade;
 uniform vec3 uTipColorLightBlade;
 uniform vec4 uGrassParams;
+uniform sampler2D uGrassTextureDiffuse;
 
 varying float vHeightPercentage;
 varying vec2 vUv;
@@ -30,10 +31,13 @@ void main() {
     vec3 baseColor = mix(grassMixColor, grassMixColor, smoothstep(0.009, 0.0009, abs(grassX)));
 
     // Shadow drop
-    float ao = remap(pow(vHeightPercentage, 1.0), 0.0, 1.0, 0.75, 1.0);
+    float ao = remap(pow(vHeightPercentage, 1.0), 0.0, 1.0, 0.8, 1.0);
 
     vec3 finalColor = vec3(baseColor);
-    gl_FragColor = vec4(finalColor, 1.0);
+    gl_FragColor = vec4(finalColor, 1.0) * ao;
+
+    // Using texture as color for across field map
+    // vec4 grassTexture = texture2D(uGrassTextureDiffuse, vMapUv);
 
     // Using texture as color
     // vec4 grassTexture = texture2D(uGrassTexture, vUv) * mask;

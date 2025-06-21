@@ -68,7 +68,7 @@ void main() {
     float windLeanAngle = windStrengthMultiplier * 1.5 * heighPercent;
 
     float randomLeanAnimation = noise3d(vec3(grassBladeWorldPos.xz * 10.0, uTime)) * (windStrengthMultiplier);
-    float leanFactor = remap(hashVal.y, -1.0, 1.0, -0.25, 0.25) + randomLeanAnimation;
+    float leanFactor = remap(hashVal.y, -1.0, 1.0, -0.25, 0.25) + randomLeanAnimation * 0.75 * windStrengthMultiplier;
 
     vec3 p1 = vec3(0.0); // base of grass
     vec3 p2 = vec3(0.0, 0.33, 0.0); // 1/3rd way up
