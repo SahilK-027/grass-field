@@ -7,6 +7,7 @@ uniform vec3 uBaseColorLightBlade;
 uniform vec3 uTipColorLightBlade;
 uniform vec4 uGrassParams;
 uniform sampler2D uGrassTextureDiffuse;
+uniform sampler2D uGrassFieldNoiseTexture;
 
 varying float vHeightPercentage;
 varying vec2 vUv;
@@ -15,14 +16,22 @@ varying vec3 vDebugColor;
 varying vec4 vGrassData;
 
 #include ./helpers/utils;
+#include ./helpers/hashFunctions;
+#include ./helpers/noise3d;
 #include ./helpers/noise2d;
 
 void main() {
     float grassX = vGrassData.x;
     float grassY = vGrassData.y;
 
+    // float noiseSample = noise2d(vMapUv, 1.25);
+    // noiseSample = remap(noiseSample, -1.0, 1.0, -0.5, 1.0);
+
+    float noiseSample = texture2D(uGrassFieldNoiseTexture, vMapUv).r;
+    noiseSample = remap(noiseSample, -1.0, 1.0, -0.25, 1.0);
+
     // Texture mask
-    float maskRaw = noise2d(vMapUv, 5.0);
+    float maskRaw = noiseSample;
     float mask = smoothstep(uGrassColorStep.x, uGrassColorStep.y, maskRaw);
     vec3 c1 = mix(uBaseColorDarkBlade, uTipColorDarkBlade, vHeightPercentage);
     vec3 c2 = mix(uBaseColorLightBlade, uTipColorLightBlade, vHeightPercentage);
@@ -45,5 +54,6 @@ void main() {
     // if (grassTexture.w < 0.5) { discard; }
     // gl_FragColor = grassTexture;
 
+    // gl_FragColor = vec4(vec3(maskRaw), 1.0); // ! DEBUG
     // gl_FragColor = vec4(vDebugColor, 1.0); // ! DEBUG
 }

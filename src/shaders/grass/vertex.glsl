@@ -103,7 +103,7 @@ void main() {
     // All varyings
     vGrassData = vec4(x, 0.0, 0.0, 0.0);
     vHeightPercentage = heighPercent;
-    vMapUv = (grassOffset.xz) + 0.5; // compute a UV over the entire patch, based on each blade’s XZ offset:  grassOffset.xz runs from roughly -patchSize/2 → +patchSize/2 so we remap that to [0,1]
+    vMapUv = (grassOffset.xz / GRASS_PATCH_SIZE) + 0.5; // compute a UV over the entire patch, based on each blade’s XZ offset:  grassOffset.xz runs from roughly -patchSize/2 → +patchSize/2 so we remap that to [0,1]
     vUv = vec2(xSide, heighPercent);
 
     vDebugColor = vec3(vMapUv, 0.0); // Color used for visualizing stuff from vertex shader

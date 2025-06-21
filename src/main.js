@@ -5,12 +5,13 @@ import "./style.css";
 import vertex from "./shaders/grass/vertex.glsl";
 import fragment from "./shaders/grass/fragment.glsl";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
+import Stats from "stats-gl";
 
 class ShaderRenderer {
-  static BLADES_NUM = 2048 * 8;
+  static BLADES_NUM = 32000;
   static SEGMENTS = 4;
-  static PATCH_SIZE = 0.5; // Note: 0.5 patch size will corresponds 1 square unit on grid
-  static BLADE_HEIGHT = 0.2;
+  static PATCH_SIZE = 1.0; // Note: 0.5 patch size will corresponds 1 square unit on grid
+  static BLADE_HEIGHT = 0.15;
   static BLADE_WIDTH = 0.01;
 
   constructor() {
@@ -30,6 +31,7 @@ class ShaderRenderer {
     this.initLights();
     this.initGUI();
     this.initEventListeners();
+    this.initPerformanceMonitoring();
     this.startAnimationLoop();
   }
 
@@ -111,6 +113,14 @@ class ShaderRenderer {
     grassDiffuse.wrapT = THREE.RepeatWrapping;
     grassDiffuse.generateMipmaps = true;
 
+    const grassFieldNoiseTexture = new THREE.TextureLoader().load(
+      "/assets/textures/grass_displacement_map_3.png"
+    );
+
+    grassFieldNoiseTexture.wrapS = THREE.RepeatWrapping;
+    grassFieldNoiseTexture.wrapT = THREE.RepeatWrapping;
+    grassFieldNoiseTexture.generateMipmaps = true;
+
     const grassMaterial = new THREE.ShaderMaterial({
       vertexShader: vertex,
       fragmentShader: fragment,
@@ -129,9 +139,7 @@ class ShaderRenderer {
           ),
         },
         uTipColorDarkBlade: {
-          value: new THREE.Color(
-            0x08ba5e
-          ),
+          value: new THREE.Color(0x08ba5e),
         },
         uBaseColorDarkBlade: {
           value: new THREE.Color(0x00a331),
@@ -147,6 +155,9 @@ class ShaderRenderer {
         },
         uGrassTextureDiffuse: {
           value: grassDiffuse,
+        },
+        uGrassFieldNoiseTexture: {
+          value: grassFieldNoiseTexture,
         },
       },
     });
@@ -216,7 +227,7 @@ class ShaderRenderer {
       .onChange(() => this.recreateGrass());
 
     grassGeometryFolder
-      .add(this.grassParams, "patchSize", 0.1, 2.0, 0.05)
+      .add(this.grassParams, "patchSize", 0.1, 10.0, 0.05)
       .name("Patch Size")
       .onChange(() => {
         this.grassMaterial.uniforms.uGrassParams.value.y =
@@ -630,6 +641,8 @@ class ShaderRenderer {
   }
 
   animate() {
+    this.stats.begin();
+
     // Handle time controls
     let deltaTime = this.clock.getDelta();
     if (!this.animationParams.pauseTime) {
@@ -642,6 +655,28 @@ class ShaderRenderer {
     this.renderer.render(this.scene, this.camera);
 
     window.requestAnimationFrame(() => this.animate());
+
+    this.stats.end();
+    this.stats.update();
+  }
+
+  initPerformanceMonitoring() {
+    this.stats = new Stats({
+      trackGPU: true,
+      trackHz: true,
+      trackCPT: true,
+      logsPerSecond: 4,
+      graphsPerSecond: 30,
+      samplesLog: 40,
+      samplesGraph: 10,
+      precision: 2,
+      horizontal: false,
+      minimal: false,
+      mode: 0,
+    });
+
+    this.stats.init(this.renderer.domElement);
+    document.body.appendChild(this.stats.dom);
   }
 
   startAnimationLoop() {
