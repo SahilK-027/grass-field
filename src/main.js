@@ -5,6 +5,7 @@ import "./style.css";
 import vertex from "./shaders/grass/vertex.glsl";
 import fragment from "./shaders/grass/fragment.glsl";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import Stats from "stats-gl";
 
 class ShaderRenderer {
@@ -37,18 +38,67 @@ class ShaderRenderer {
 
   initSceneObjects() {
     this.addFloor();
+    this.addGLTF();
     this.addGrass();
   }
 
   addFloor() {
     this.floorGeometry = new THREE.PlaneGeometry(5, 5, 1, 1);
     this.floorMaterial = new THREE.MeshStandardMaterial({
-      color: "#121316",
+      color: "#c7a85b",
     });
 
     this.floorMesh = new THREE.Mesh(this.floorGeometry, this.floorMaterial);
     this.floorMesh.rotation.x = (-1.0 * Math.PI) / 2;
+    this.floorMesh.receiveShadow = true;
     this.scene.add(this.floorMesh);
+  }
+
+  addGLTF() {
+    new GLTFLoader().load("/assets/models/deer2.glb", (gltf) => {
+      const model = gltf.scene;
+      model.scale.set(0.4, 0.4, 0.4);
+      model.rotation.y = -Math.PI / 6;
+
+      console.log('model', model)
+
+      model.traverse((child) => {
+        if (child.isMesh) {
+          const oldMat = child.material;
+
+          // Handle multi-materials
+          if (Array.isArray(oldMat)) {
+            child.material = oldMat.map((m) => makeToon(m));
+          } else {
+            child.material = makeToon(oldMat);
+          }
+
+          child.castShadow = true;
+          child.receiveShadow = true;
+        }
+      });
+
+      this.scene.add(model);
+    });
+
+    function makeToon(oldMat) {
+      const gradientMap = new THREE.TextureLoader().load(
+        "/assets/textures/gradients/5.jpg"
+      );
+      gradientMap.minFilter = THREE.NearestFilter;
+      gradientMap.magFilter = THREE.NearestFilter;
+      gradientMap.generateMipmaps = false;
+      return new THREE.MeshToonMaterial({
+        color: oldMat.color,
+        map: oldMat.map,
+        lightMap: oldMat.lightMap,
+        aoMap: oldMat.aoMap,
+        emissiveMap: oldMat.emissiveMap,
+        emissive: oldMat.emissive,
+        normalMap: oldMat.normalMap,
+        gradientMap: gradientMap,
+      });
+    }
   }
 
   addGrass() {
@@ -57,6 +107,8 @@ class ShaderRenderer {
 
     this.grassMesh = new THREE.Mesh(this.grassGeometry, this.grassMaterial);
     this.grassMesh.position.set(0, 0, 0);
+    this.grassMesh.castShadow = true;
+    this.grassMesh.receiveShadow = false;
     this.scene.add(this.grassMesh);
   }
 
@@ -184,6 +236,8 @@ class ShaderRenderer {
     });
     this.renderer.setSize(this.sizes.width, this.sizes.height);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.shadowMap.enabled = true; // enable shadows
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   }
 
   initControls() {
@@ -192,13 +246,29 @@ class ShaderRenderer {
   }
 
   initLights() {
-    this.ambientLight = new THREE.AmbientLight(0xcecece, 10);
-    this.scene.add(this.ambientLight);
+    // Ambient light for general illumination
+    this.hemiLight = new THREE.HemisphereLight("#e5f6ff", "#e2ffb3", 0.7);
+    this.scene.add(this.hemiLight);
+
+    // Directional light to cast shadows
+    this.directionalLight = new THREE.DirectionalLight(0xfafffd, 5.0);
+    this.directionalLight.position.set(1.75, 1, -1.0);
+    this.directionalLight.castShadow = true;
+    this.drHelper = new THREE.DirectionalLightHelper(this.directionalLight);
+    this.scene.add(this.drHelper);
+
+    // Configure shadow map size and camera for better quality
+    this.directionalLight.shadow.mapSize.width = 2048;
+    this.directionalLight.shadow.mapSize.height = 2048;
+    this.directionalLight.shadow.bias = -0.002;
+
+    this.scene.add(this.directionalLight);
 
     new RGBELoader().load("/assets/environments/clouds.hdr", (hdri) => {
       hdri.mapping = THREE.EquirectangularReflectionMapping;
       this.scene.background = hdri;
       this.scene.environment = hdri;
+      this.scene.environmentIntensity = 0.25;
     });
   }
 
@@ -285,8 +355,6 @@ class ShaderRenderer {
           this.windParams.directionZ
         );
       });
-
-    windFolder.close();
 
     // Grass Colors
     const colorsFolder = this.gui.addFolder("Grass Colors");
@@ -375,26 +443,69 @@ class ShaderRenderer {
       });
 
     // Lighting
+    // Lighting
     const lightingFolder = this.gui.addFolder("Lighting");
 
-    this.lightingParams = {
-      ambientIntensity: this.ambientLight.intensity,
-      ambientColor: "#" + this.ambientLight.color.getHexString(),
+    // Hemisphere Light
+    this.lightParams = {
+      hemiSkyColor: "#" + this.hemiLight.color.getHexString(),
+      hemiGroundColor: "#" + this.hemiLight.groundColor.getHexString(),
+      hemiIntensity: this.hemiLight.intensity,
     };
+    const hemiFolder = lightingFolder.addFolder("Hemisphere Light");
+    hemiFolder
+      .addColor(this.lightParams, "hemiSkyColor")
+      .name("Sky Color")
+      .onChange((v) => this.hemiLight.color.set(v));
+    hemiFolder
+      .addColor(this.lightParams, "hemiGroundColor")
+      .name("Ground Color")
+      .onChange((v) => this.hemiLight.groundColor.set(v));
+    hemiFolder
+      .add(this.lightParams, "hemiIntensity", 0, 2, 0.01)
+      .name("Intensity")
+      .onChange((v) => (this.hemiLight.intensity = v));
 
-    lightingFolder
-      .add(this.lightingParams, "ambientIntensity", 0.0, 20.0, 0.1)
-      .name("Ambient Intensity")
-      .onChange((value) => {
-        this.ambientLight.intensity = value;
-      });
+    // Directional Light
+    Object.assign(this.lightParams, {
+      dirColor: "#" + this.directionalLight.color.getHexString(),
+      dirIntensity: this.directionalLight.intensity,
+      dirX: this.directionalLight.position.x,
+      dirY: this.directionalLight.position.y,
+      dirZ: this.directionalLight.position.z,
+      dirCastShadow: this.directionalLight.castShadow,
+    });
+    const dirFolder = lightingFolder.addFolder("Directional Light");
+    dirFolder
+      .addColor(this.lightParams, "dirColor")
+      .name("Color")
+      .onChange((v) => this.directionalLight.color.set(v));
+    dirFolder
+      .add(this.lightParams, "dirIntensity", 0, 2, 0.01)
+      .name("Intensity")
+      .onChange((v) => (this.directionalLight.intensity = v));
+    dirFolder
+      .add(this.lightParams, "dirX", -10, 10, 0.1)
+      .name("Position X")
+      .onChange((v) => (this.directionalLight.position.x = v));
+    dirFolder
+      .add(this.lightParams, "dirY", -10, 10, 0.1)
+      .name("Position Y")
+      .onChange((v) => (this.directionalLight.position.y = v));
+    dirFolder
+      .add(this.lightParams, "dirZ", -10, 10, 0.1)
+      .name("Position Z")
+      .onChange((v) => (this.directionalLight.position.z = v));
+    dirFolder
+      .add(this.lightParams, "dirCastShadow")
+      .name("Cast Shadow")
+      .onChange((v) => (this.directionalLight.castShadow = v));
 
-    lightingFolder
-      .addColor(this.lightingParams, "ambientColor")
-      .name("Ambient Color")
-      .onChange((value) => {
-        this.ambientLight.color.setHex(value.replace("#", "0x"));
-      });
+    // Show/hide helper
+    dirFolder
+      .add({ showHelper: true }, "showHelper")
+      .name("Helper Visible")
+      .onChange((v) => (this.drHelper.visible = v));
 
     // Floor
     const floorFolder = this.gui.addFolder("Floor");
@@ -473,39 +584,6 @@ class ShaderRenderer {
     animationFolder.add(this.animationParams, "pauseTime").name("Pause Time");
 
     animationFolder.add(this.animationParams, "resetTime").name("Reset Time");
-
-    // Presets
-    const presetsFolder = this.gui.addFolder("Presets");
-
-    this.presetParams = {
-      savePreset: () => {
-        const preset = {
-          grassParams: { ...this.grassParams },
-          windParams: { ...this.windParams },
-          colorParams: { ...this.colorParams },
-          colorMixParams: { ...this.colorMixParams },
-        };
-        console.log("Grass Preset:", JSON.stringify(preset, null, 2));
-      },
-      lushGrass: () => this.applyLushGrassPreset(),
-      driedGrass: () => this.applyDriedGrassPreset(),
-      windyField: () => this.applyWindyFieldPreset(),
-    };
-
-    presetsFolder.add(this.presetParams, "savePreset").name("Save Current");
-    presetsFolder.add(this.presetParams, "lushGrass").name("Lush Grass");
-    presetsFolder.add(this.presetParams, "driedGrass").name("Dried Grass");
-    presetsFolder.add(this.presetParams, "windyField").name("Windy Field");
-
-    // Initially close some folders
-    grassGeometryFolder.close();
-    colorsFolder.close();
-    lightingFolder.close();
-    floorFolder.close();
-    cameraFolder.close();
-    performanceFolder.close();
-    animationFolder.close();
-    presetsFolder.close();
   }
 
   // Helper method to recreate grass geometry when parameters change
@@ -545,76 +623,6 @@ class ShaderRenderer {
 
     // Restore original static values
     Object.assign(ShaderRenderer, originalValues);
-  }
-
-  // Preset methods
-  applyLushGrassPreset() {
-    // Lush green grass
-    this.colorParams.tipColorLight = "#a8e600";
-    this.colorParams.baseColorLight = "#68bd00";
-    this.colorParams.tipColorDark = "#478a10";
-    this.colorParams.baseColorDark = "#007a4b";
-
-    this.windParams.strength = 0.1;
-    this.grassParams.bladeHeight = 0.25;
-
-    this.updateFromPreset();
-  }
-
-  applyDriedGrassPreset() {
-    // Dried yellowish grass
-    this.colorParams.tipColorLight = "#d4a574";
-    this.colorParams.baseColorLight = "#8b6914";
-    this.colorParams.tipColorDark = "#6b4423";
-    this.colorParams.baseColorDark = "#4a2c14";
-
-    this.windParams.strength = 0.4;
-    this.grassParams.bladeHeight = 0.15;
-
-    this.updateFromPreset();
-  }
-
-  applyWindyFieldPreset() {
-    // Strong wind effect
-    this.windParams.strength = 1.2;
-    this.windParams.directionX = 0.8;
-    this.windParams.directionZ = 0.6;
-
-    this.grassParams.bladesNum = 16384;
-    this.grassParams.bladeHeight = 0.3;
-
-    this.updateFromPreset();
-  }
-
-  updateFromPreset() {
-    // Update all uniforms and GUI
-    this.grassMaterial.uniforms.uTipColorLightBlade.value.setHex(
-      this.colorParams.tipColorLight.replace("#", "0x")
-    );
-    this.grassMaterial.uniforms.uBaseColorLightBlade.value.setHex(
-      this.colorParams.baseColorLight.replace("#", "0x")
-    );
-    this.grassMaterial.uniforms.uTipColorDarkBlade.value.setHex(
-      this.colorParams.tipColorDark.replace("#", "0x")
-    );
-    this.grassMaterial.uniforms.uBaseColorDarkBlade.value.setHex(
-      this.colorParams.baseColorDark.replace("#", "0x")
-    );
-
-    this.grassMaterial.uniforms.uWindStrength.value = this.windParams.strength;
-    this.grassMaterial.uniforms.uWindDir.value.set(
-      this.windParams.directionX,
-      this.windParams.directionZ
-    );
-
-    this.grassMaterial.uniforms.uGrassParams.value.w =
-      this.grassParams.bladeHeight;
-
-    // Refresh GUI
-    this.gui.updateDisplay();
-
-    // Recreate grass if needed
-    this.recreateGrass();
   }
 
   initEventListeners() {
