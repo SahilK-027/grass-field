@@ -57,10 +57,10 @@ class ShaderRenderer {
   addGLTF() {
     new GLTFLoader().load("/assets/models/deer2.glb", (gltf) => {
       const model = gltf.scene;
-      model.scale.set(0.4, 0.4, 0.4);
+      model.scale.set(0.75, 0.75, 0.75);
       model.rotation.y = -Math.PI / 6;
 
-      console.log('model', model)
+      console.log("model", model);
 
       model.traverse((child) => {
         if (child.isMesh) {
