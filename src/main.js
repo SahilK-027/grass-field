@@ -4,14 +4,20 @@ import GUI from "lil-gui";
 import "./style.css";
 import vertex from "./shaders/grass/vertex.glsl";
 import fragment from "./shaders/grass/fragment.glsl";
+import bezier from "./shaders/grass/helpers/bezier.glsl";
+import hashFunctions from "./shaders/grass/helpers/hashFunctions.glsl";
+import noise2d from "./shaders/grass/helpers/noise2d.glsl";
+import noise3d from "./shaders/grass/helpers/noise3d.glsl";
+import rotation from "./shaders/grass/helpers/rotation.glsl";
+import utils from "./shaders/grass/helpers/utils.glsl";
 import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import Stats from "stats-gl";
 
 class ShaderRenderer {
-  static BLADES_NUM = 100000;
-  static SEGMENTS = 4;
-  static PATCH_SIZE = 1.25;
+  static BLADES_NUM = 32000;
+  static SEGMENTS = 2;
+  static PATCH_SIZE = 0.75;
   static BLADE_HEIGHT = 0.15;
   static BLADE_WIDTH = 0.01;
 
@@ -28,15 +34,7 @@ class ShaderRenderer {
     this.mixer = null;
     this.actions = {};
     this.activeAction = null;
-    this.sequence = [
-      // "Stand_Breathing_01",
-      // "Stand_Eating_01",
-      // "Stand_Breathing_01",
-      "Trans_Stand_to_Lying",
-      "Lying_Breathing_01",
-      "Lying_Breathing_01",
-      "Trans_Sitting_to_Stand",
-    ];
+    this.sequence = ["Stand_Breathing_01", "Stand_Eating_01"];
     this.seqIndex = 0;
 
     // Preload toon gradient ramp once
@@ -49,13 +47,52 @@ class ShaderRenderer {
       }
     );
 
+    const grassDiffuse = new THREE.TextureLoader().load(
+      "/assets/textures/grass_diffuse.webp"
+    );
+
+    grassDiffuse.wrapS = THREE.RepeatWrapping;
+    grassDiffuse.wrapT = THREE.RepeatWrapping;
+    grassDiffuse.generateMipmaps = true;
+
+    const grassFieldNoiseTexture = new THREE.TextureLoader().load(
+      "/assets/textures/grass_displacement_map_3.png"
+    );
+
+    grassFieldNoiseTexture.wrapS = THREE.RepeatWrapping;
+    grassFieldNoiseTexture.wrapT = THREE.RepeatWrapping;
+    grassFieldNoiseTexture.generateMipmaps = true;
+
+    this.grassShaderUniforms = {
+      uResolution: {
+        value: new THREE.Vector2(this.sizes.width, this.sizes.height),
+      },
+      uTime: { value: 0.0 },
+      uGrassParams: {
+        value: new THREE.Vector4(
+          ShaderRenderer.SEGMENTS,
+          ShaderRenderer.PATCH_SIZE,
+          ShaderRenderer.BLADE_WIDTH,
+          ShaderRenderer.BLADE_HEIGHT
+        ),
+      },
+      uWindStrength: { value: 0.3 },
+      uWindDir: { value: new THREE.Vector2(1, 0) },
+      uGrassColorStep: { value: new THREE.Vector2(0.0, 1.0) },
+      uBaseColorDarkBlade: { value: new THREE.Color(0x016f22) },
+      uTipColorDarkBlade: { value: new THREE.Color(0x70cc14) },
+      uBaseColorLightBlade: { value: new THREE.Color(0x68ad00) },
+      uTipColorLightBlade: { value: new THREE.Color(0xd4f400) },
+      uGrassFieldNoiseTexture: { value: grassFieldNoiseTexture },
+    };
+
     // Init everything
     this.initSceneObjects();
     this.initCamera();
     this.initRenderer();
     this.initControls();
     this.initLights();
-    this.initGUI();
+    this.initGUI(); //!DEBUG
     this.initEventListeners();
     this.initPerformanceMonitoring();
     this.startAnimationLoop();
@@ -110,13 +147,14 @@ class ShaderRenderer {
   _setupSequence(names) {
     this.seq = names;
     this.seqIndex = 0;
+
     this.mixer.addEventListener("finished", () => {
-      this.seqIndex++;
-      if (this.seqIndex < this.seq.length) {
-        this._playClip(this.seq[this.seqIndex]);
-      }
+      // advance and wrap around
+      this.seqIndex = (this.seqIndex + 1) % this.seq.length;
+      this._playClip(this.seq[this.seqIndex]);
     });
-    // start
+
+    // kick things off
     this._playClip(this.seq[0]);
   }
 
@@ -170,7 +208,7 @@ class ShaderRenderer {
     this.grassMesh = new THREE.Mesh(this.grassGeometry, this.grassMaterial);
     this.grassMesh.position.set(0, 0, 0);
     this.grassMesh.castShadow = true;
-    this.grassMesh.receiveShadow = false;
+    this.grassMesh.receiveShadow = true;
     this.scene.add(this.grassMesh);
   }
 
@@ -193,12 +231,11 @@ class ShaderRenderer {
       INDICES[i * 12 + 4] = vi + 1;
       INDICES[i * 12 + 5] = vi + 3;
 
-      // -- Back face indices (clockwise winding) duplicates same vertices but flips winding
+      // Back face indices (clockwise winding)
       const fi = VERTICES + vi;
       INDICES[i * 12 + 6] = fi + 2;
       INDICES[i * 12 + 7] = fi + 1;
       INDICES[i * 12 + 8] = fi + 0;
-
       INDICES[i * 12 + 9] = fi + 3;
       INDICES[i * 12 + 10] = fi + 1;
       INDICES[i * 12 + 11] = fi + 2;
@@ -219,62 +256,78 @@ class ShaderRenderer {
     const { SEGMENTS, BLADES_NUM, PATCH_SIZE, BLADE_WIDTH, BLADE_HEIGHT } =
       this.constructor;
 
-    const grassDiffuse = new THREE.TextureLoader().load(
-      "/assets/textures/grass_diffuse.webp"
-    );
-
-    grassDiffuse.wrapS = THREE.RepeatWrapping;
-    grassDiffuse.wrapT = THREE.RepeatWrapping;
-    grassDiffuse.generateMipmaps = true;
-
-    const grassFieldNoiseTexture = new THREE.TextureLoader().load(
-      "/assets/textures/grass_displacement_map_3.png"
-    );
-
-    grassFieldNoiseTexture.wrapS = THREE.RepeatWrapping;
-    grassFieldNoiseTexture.wrapT = THREE.RepeatWrapping;
-    grassFieldNoiseTexture.generateMipmaps = true;
-
-    const grassMaterial = new THREE.ShaderMaterial({
-      vertexShader: vertex,
-      fragmentShader: fragment,
+    const grassMaterial = new THREE.MeshToonMaterial({
+      gradientMap: this.gradientMap,
+      toneMapped: false,
       side: THREE.FrontSide,
-      uniforms: {
-        uTime: { value: 0.0 },
-        uResolution: { value: new THREE.Vector2() },
-        uWindStrength: { value: 0.3 },
-        uWindDir: { value: new THREE.Vector2(1, 0) },
-        uGrassParams: {
-          value: new THREE.Vector4(
-            SEGMENTS,
-            PATCH_SIZE,
-            BLADE_WIDTH,
-            BLADE_HEIGHT
-          ),
-        },
-        uTipColorDarkBlade: {
-          value: new THREE.Color(0x08ba5e),
-        },
-        uBaseColorDarkBlade: {
-          value: new THREE.Color(0x00a331),
-        },
-        uTipColorLightBlade: {
-          value: new THREE.Color(0xd4f400),
-        },
-        uBaseColorLightBlade: {
-          value: new THREE.Color(0x7acc00),
-        },
-        uGrassColorStep: {
-          value: new THREE.Vector2(0.0, 1.0),
-        },
-        uGrassTextureDiffuse: {
-          value: grassDiffuse,
-        },
-        uGrassFieldNoiseTexture: {
-          value: grassFieldNoiseTexture,
-        },
-      },
     });
+
+    const helperFunctions = `
+      ${bezier}
+      ${hashFunctions}
+      ${noise2d}
+      ${noise3d}
+      ${rotation}
+      ${utils}
+    `;
+
+    grassMaterial.onBeforeCompile = (shaders) => {
+      // Add uniforms to the material
+      Object.assign(shaders.uniforms, this.grassShaderUniforms);
+
+      const vertexPreamble = `
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec4 uGrassParams;
+        uniform float uWindStrength;
+        uniform vec2 uWindDir;
+
+        varying vec4 vGrassData;
+        varying float vHeightPercentage;
+        varying vec2 vUv;
+        varying vec2 vMapUv;
+        varying vec3 vDebugColor;
+
+        const float PI = 3.14159265359;
+
+        ${helperFunctions}
+      `;
+      shaders.vertexShader = vertexPreamble + shaders.vertexShader;
+
+      const fragmentPreamble = `
+        uniform float uTime;
+        uniform vec2 uResolution;
+        uniform vec2 uGrassColorStep;
+        uniform vec3 uBaseColorDarkBlade;
+        uniform vec3 uTipColorDarkBlade;
+        uniform vec3 uBaseColorLightBlade;
+        uniform vec3 uTipColorLightBlade;
+        uniform vec4 uGrassParams;
+        uniform sampler2D uGrassTextureDiffuse;
+        uniform sampler2D uGrassFieldNoiseTexture;
+
+        varying float vHeightPercentage;
+        varying vec2 vUv;
+        varying vec2 vMapUv;
+        varying vec3 vDebugColor;
+        varying vec4 vGrassData;
+
+        ${helperFunctions}
+      `;
+
+      shaders.fragmentShader = fragmentPreamble + shaders.fragmentShader;
+
+      // Replace the vertex transformation
+      shaders.vertexShader = shaders.vertexShader.replace(
+        "#include <begin_vertex>",
+        ` ${vertex}`
+      );
+
+      shaders.fragmentShader = shaders.fragmentShader.replace(
+        "#include <map_fragment>",
+        `${fragment}`
+      );
+    };
 
     return grassMaterial;
   }
@@ -349,7 +402,7 @@ class ShaderRenderer {
     };
 
     grassGeometryFolder
-      .add(this.grassParams, "bladesNum", 512, 32768, 512)
+      .add(this.grassParams, "bladesNum", 512, 1024 * 1024, 512)
       .name("Blade Count")
       .onChange(() => this.recreateGrass());
 
@@ -362,7 +415,7 @@ class ShaderRenderer {
       .add(this.grassParams, "patchSize", 0.1, 10.0, 0.05)
       .name("Patch Size")
       .onChange(() => {
-        this.grassMaterial.uniforms.uGrassParams.value.y =
+        this.grassShaderUniforms.uGrassParams.value.y =
           this.grassParams.patchSize;
       });
 
@@ -370,7 +423,7 @@ class ShaderRenderer {
       .add(this.grassParams, "bladeHeight", 0.05, 1.0, 0.01)
       .name("Blade Height")
       .onChange(() => {
-        this.grassMaterial.uniforms.uGrassParams.value.w =
+        this.grassShaderUniforms.uGrassParams.value.w =
           this.grassParams.bladeHeight;
       });
 
@@ -378,31 +431,30 @@ class ShaderRenderer {
       .add(this.grassParams, "bladeWidth", 0.005, 0.05, 0.001)
       .name("Blade Width")
       .onChange(() => {
-        this.grassMaterial.uniforms.uGrassParams.value.z =
+        this.grassShaderUniforms.uGrassParams.value.z =
           this.grassParams.bladeWidth;
       });
 
     // Wind Parameters
     const windFolder = this.gui.addFolder("Wind");
-
     this.windParams = {
-      strength: this.grassMaterial.uniforms.uWindStrength.value,
-      directionX: this.grassMaterial.uniforms.uWindDir.value.x,
-      directionZ: this.grassMaterial.uniforms.uWindDir.value.y,
+      strength: this.grassShaderUniforms.uWindStrength.value,
+      directionX: this.grassShaderUniforms.uWindDir.value.x,
+      directionZ: this.grassShaderUniforms.uWindDir.value.y,
     };
 
     windFolder
       .add(this.windParams, "strength", 0.0, 2.0, 0.01)
       .name("Wind Strength")
       .onChange((value) => {
-        this.grassMaterial.uniforms.uWindStrength.value = value;
+        this.grassShaderUniforms.uWindStrength.value = value;
       });
 
     windFolder
       .add(this.windParams, "directionX", -1.0, 1.0, 0.01)
       .name("Wind Dir X")
       .onChange(() => {
-        this.grassMaterial.uniforms.uWindDir.value.set(
+        this.grassShaderUniforms.uWindDir.value.set(
           this.windParams.directionX,
           this.windParams.directionZ
         );
@@ -412,7 +464,7 @@ class ShaderRenderer {
       .add(this.windParams, "directionZ", -1.0, 1.0, 0.01)
       .name("Wind Dir Z")
       .onChange(() => {
-        this.grassMaterial.uniforms.uWindDir.value.set(
+        this.grassShaderUniforms.uWindDir.value.set(
           this.windParams.directionX,
           this.windParams.directionZ
         );
@@ -426,24 +478,21 @@ class ShaderRenderer {
 
     this.colorParams = {
       tipColorDark:
-        "#" +
-        this.grassMaterial.uniforms.uTipColorDarkBlade.value.getHexString(),
+        "#" + this.grassShaderUniforms.uTipColorDarkBlade.value.getHexString(),
       baseColorDark:
-        "#" +
-        this.grassMaterial.uniforms.uBaseColorDarkBlade.value.getHexString(),
+        "#" + this.grassShaderUniforms.uBaseColorDarkBlade.value.getHexString(),
       tipColorLight:
-        "#" +
-        this.grassMaterial.uniforms.uTipColorLightBlade.value.getHexString(),
+        "#" + this.grassShaderUniforms.uTipColorLightBlade.value.getHexString(),
       baseColorLight:
         "#" +
-        this.grassMaterial.uniforms.uBaseColorLightBlade.value.getHexString(),
+        this.grassShaderUniforms.uBaseColorLightBlade.value.getHexString(),
     };
 
     darkBladeFolder
       .addColor(this.colorParams, "tipColorDark")
       .name("Tip Color")
       .onChange((value) => {
-        this.grassMaterial.uniforms.uTipColorDarkBlade.value.setHex(
+        this.grassShaderUniforms.uTipColorDarkBlade.value.setHex(
           value.replace("#", "0x")
         );
       });
@@ -452,7 +501,7 @@ class ShaderRenderer {
       .addColor(this.colorParams, "baseColorDark")
       .name("Base Color")
       .onChange((value) => {
-        this.grassMaterial.uniforms.uBaseColorDarkBlade.value.setHex(
+        this.grassShaderUniforms.uBaseColorDarkBlade.value.setHex(
           value.replace("#", "0x")
         );
       });
@@ -464,7 +513,7 @@ class ShaderRenderer {
       .addColor(this.colorParams, "tipColorLight")
       .name("Tip Color")
       .onChange((value) => {
-        this.grassMaterial.uniforms.uTipColorLightBlade.value.setHex(
+        this.grassShaderUniforms.uTipColorLightBlade.value.setHex(
           value.replace("#", "0x")
         );
       });
@@ -473,22 +522,22 @@ class ShaderRenderer {
       .addColor(this.colorParams, "baseColorLight")
       .name("Base Color")
       .onChange((value) => {
-        this.grassMaterial.uniforms.uBaseColorLightBlade.value.setHex(
+        this.grassShaderUniforms.uBaseColorLightBlade.value.setHex(
           value.replace("#", "0x")
         );
       });
 
     // Color Mixing
     this.colorMixParams = {
-      colorStepMin: this.grassMaterial.uniforms.uGrassColorStep.value.x,
-      colorStepMax: this.grassMaterial.uniforms.uGrassColorStep.value.y,
+      colorStepMin: this.grassShaderUniforms.uGrassColorStep.value.x,
+      colorStepMax: this.grassShaderUniforms.uGrassColorStep.value.y,
     };
 
     colorsFolder
       .add(this.colorMixParams, "colorStepMin", 0.0, 1.0, 0.01)
       .name("Color Step Min")
       .onChange(() => {
-        this.grassMaterial.uniforms.uGrassColorStep.value.set(
+        this.grassShaderUniforms.uGrassColorStep.value.set(
           this.colorMixParams.colorStepMin,
           this.colorMixParams.colorStepMax
         );
@@ -498,7 +547,7 @@ class ShaderRenderer {
       .add(this.colorMixParams, "colorStepMax", 0.0, 1.0, 0.01)
       .name("Color Step Max")
       .onChange(() => {
-        this.grassMaterial.uniforms.uGrassColorStep.value.set(
+        this.grassShaderUniforms.uGrassColorStep.value.set(
           this.colorMixParams.colorStepMin,
           this.colorMixParams.colorStepMax
         );
@@ -673,7 +722,7 @@ class ShaderRenderer {
     this.scene.add(this.grassMesh);
 
     // Update material uniforms
-    this.grassMaterial.uniforms.uGrassParams.value.set(
+    this.grassShaderUniforms.uGrassParams.value.set(
       this.grassParams.segments,
       this.grassParams.patchSize,
       this.grassParams.bladeWidth,
@@ -701,7 +750,7 @@ class ShaderRenderer {
     this.renderer.setSize(this.sizes.width, this.sizes.height);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
-    this.grassMaterial.uniforms.uResolution.value.set(
+    this.grassShaderUniforms.uResolution.value.set(
       this.sizes.width,
       this.sizes.height
     );
@@ -712,10 +761,7 @@ class ShaderRenderer {
 
     // Handle time controls
     let deltaTime = this.clock.getDelta();
-    if (!this.animationParams.pauseTime) {
-      this.grassMaterial.uniforms.uTime.value +=
-        deltaTime * this.animationParams.timeScale;
-    }
+    this.grassShaderUniforms.uTime.value += deltaTime;
 
     if (this.mixer)
       this.mixer.update(deltaTime * (this.animationParams?.timeScale || 1));
